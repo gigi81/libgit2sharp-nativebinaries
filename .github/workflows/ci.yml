@@ -10,7 +10,6 @@ on:
   workflow_dispatch:
 
 env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   CCACHE_DIR: ${{ github.workspace }}/.ccache
   CCACHE_BASEDIR: ${{ github.workspace }}
   CCACHE_MAXSIZE: 200M
@@ -33,10 +32,10 @@ jobs:
           - { os: macos-latest, ridRequested: osx-arm64, cmake_args: '-DCMAKE_OSX_ARCHITECTURES=arm64 -DUSE_HTTPS=ON' }
 
           # Linux (Glibc)
-          - { os: ubuntu-latest, ridRequested: linux-x64,   cmake_args: '-DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON' }
-          - { os: ubuntu-latest, ridRequested: linux-arm,   cmake_args: '-DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ -DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=arm' }
-          - { os: ubuntu-latest, ridRequested: linux-arm64, cmake_args: '-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ -DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64' }
-          - { os: ubuntu-latest, ridRequested: linux-ppc64le, cmake_args: '-DCMAKE_C_COMPILER=powerpc64le-linux-gnu-gcc -DCMAKE_CXX_COMPILER=powerpc64le-linux-gnu-g++ -DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=ppc64le' }
+          - { os: ubuntu-latest, ridRequested: linux-x64,   container: 'ubuntu:22.04', cmake_args: '-DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON' }
+          - { os: ubuntu-latest, ridRequested: linux-arm,   container: 'ubuntu:22.04', cmake_args: '-DCMAKE_C_COMPILER=arm-linux-gnueabihf-gcc -DCMAKE_CXX_COMPILER=arm-linux-gnueabihf-g++ -DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=arm' }
+          - { os: ubuntu-latest, ridRequested: linux-arm64, container: 'ubuntu:22.04', cmake_args: '-DCMAKE_C_COMPILER=aarch64-linux-gnu-gcc -DCMAKE_CXX_COMPILER=aarch64-linux-gnu-g++ -DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=aarch64' }
+          - { os: ubuntu-latest, ridRequested: linux-ppc64le, container: 'ubuntu:22.04', cmake_args: '-DCMAKE_C_COMPILER=powerpc64le-linux-gnu-gcc -DCMAKE_CXX_COMPILER=powerpc64le-linux-gnu-g++ -DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON -DCMAKE_SYSTEM_NAME=Linux -DCMAKE_SYSTEM_PROCESSOR=ppc64le' }
 
           # Linux (Musl)
           - { os: ubuntu-latest, ridRequested: linux-musl-x64,   container: 'alpine:latest', cmake_args: '-DUSE_HTTPS=OpenSSL-Dynamic -DUSE_BUNDLED_ZLIB=ON' }
@@ -46,10 +45,10 @@ jobs:
     steps:
       - name: Setup QEMU
         if: runner.os == 'Linux'
-        uses: docker/setup-qemu-action@v3
+        uses: docker/setup-qemu-action@v4
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           submodules: true
 
@@ -59,7 +58,7 @@ jobs:
         run: echo "sha=$(cat nuget.package/libgit2/libgit2_hash.txt | head -c 7)" >> $GITHUB_OUTPUT
 
       - name: Cache CCache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .ccache
           key: ${{ matrix.ridRequested }}-${{ steps.get_sha.outputs.sha }}
@@ -89,32 +88,44 @@ jobs:
         if: runner.os == 'Windows'
         run: choco install ccache
 
-      - name: Build Project
-        uses: threeal/cmake-action@v2.1.0
+      - name: Setup CMake
         if: matrix.container == ''
+        uses: jwlawson/actions-setup-cmake@v2
         with:
-          source-dir: libgit2
-          build-dir: libgit2/build
-          args: >
-            ${{ matrix.cmake_args }}
-            -DCMAKE_C_COMPILER_LAUNCHER=ccache
-            -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-            -DLIBGIT2_FILENAME=git2-${{ steps.get_sha.outputs.sha }}
-            -DBUILD_TESTS=OFF
-            -DBUILD_CLI=OFF
-            -DUSE_SSH=exec
-          build-args: '--config Release --parallel'
+          cmake-version: latest
 
-      - name: Build Project (Docker Musl)
+      - name: Build Project
+        if: matrix.container == ''
+        run: |
+          cmake -S libgit2 -B libgit2/build ${{ matrix.cmake_args }} -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache -DLIBGIT2_FILENAME=git2-${{ steps.get_sha.outputs.sha }} -DBUILD_TESTS=OFF -DBUILD_CLI=OFF -DUSE_SSH=exec
+          cmake --build libgit2/build --config Release --parallel
+
+      - name: Build Project (Docker)
         if: matrix.container != ''
         run: |
           mkdir -p .ccache
+          
+          # Determine if Alpine (Musl) or Ubuntu (Glibc)
+          if [[ "${{ matrix.container }}" == *"alpine"* ]]; then
+            SETUP_CMD="apk add --no-cache build-base cmake ccache bash pkgconfig openssl-dev zlib-dev"
+          else
+            SETUP_CMD="apt-get update && apt-get install -y build-essential cmake ccache bash pkg-config libssl-dev zlib1g-dev"
+            # Add cross-compilation tools if needed
+            if [ "${{ matrix.ridRequested }}" == "linux-arm64" ]; then
+              SETUP_CMD="$SETUP_CMD gcc-aarch64-linux-gnu g++-aarch64-linux-gnu"
+            elif [ "${{ matrix.ridRequested }}" == "linux-arm" ]; then
+              SETUP_CMD="$SETUP_CMD gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf"
+            elif [ "${{ matrix.ridRequested }}" == "linux-ppc64le" ]; then
+              SETUP_CMD="$SETUP_CMD gcc-powerpc64le-linux-gnu g++-powerpc64le-linux-gnu"
+            fi
+          fi
+          
           docker run --rm \
             -v ${{ github.workspace }}:/work \
             -v ${{ github.workspace }}/.ccache:/root/.ccache \
             -e CCACHE_DIR=/root/.ccache \
             -w /work ${{ matrix.container }} /bin/sh -c "
-            apk add --no-cache build-base cmake ccache bash pkgconfig openssl-dev zlib-dev &&
+            $SETUP_CMD &&
             cmake -B libgit2/build -S libgit2 ${{ matrix.cmake_args }} \
               -DCMAKE_C_COMPILER_LAUNCHER=ccache \
               -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -134,7 +145,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.ridRequested }}
           path: staging/
@@ -148,13 +159,13 @@ jobs:
     runs-on: windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           fetch-depth: 0
           submodules: true
 
       - name: Setup .NET SDK
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@v5
         with:
           dotnet-version: 10.0.x
 
@@ -165,7 +176,7 @@ jobs:
           ./UpdateLibgit2ToSha.ps1
 
       - name: Download artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: nuget.package/runtimes/
 
@@ -177,7 +188,7 @@ jobs:
         shell: bash
 
       - name: Upload NuGet package artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nuget-package
           path: packages/*.nupkg
@@ -205,7 +216,7 @@ jobs:
       contents: write
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: release-artifacts
 
@@ -240,7 +251,7 @@ jobs:
           done
 
       - name: Create Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: assets/*
           generate_release_notes: true
