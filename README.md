@@ -1,6 +1,8 @@
 # libgit2 native binaries nuget package
 
 [![CI](https://github.com/gigi81/libgit2sharp-nativebinaries/actions/workflows/ci.yml/badge.svg)](https://github.com/gigi81/libgit2sharp-nativebinaries/actions/workflows/ci.yml)
+![NuGet Version](https://img.shields.io/nuget/v/libgit2)
+
 
 This is a modernized fork of the original `LibGit2Sharp.NativeBinaries` project. It provides the native `libgit2` binaries required by [LibGit2Sharp](https://github.com/libgit2/libgit2sharp).
 
